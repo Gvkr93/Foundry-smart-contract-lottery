@@ -6,9 +6,10 @@ import {Raffle} from "../../src/Raffle.sol";
 import {Test, console} from "forge-std/Test.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {Vm} from "forge-std/Vm.sol";
-import {VRFCoordinatorV2Mock} from "@chainlink/contracts/src/v0.8/mocks/VRFCoordinatorV2Mock.sol";
+import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
+import {CodeConstants} from "script/HelperConfig.s.sol";
 
-contract RaffleTest is Test {
+contract RaffleTest is CodeConstants, Test {
     /* Events */
     event EnteredRaffle(address indexed player);
 
@@ -19,8 +20,8 @@ contract RaffleTest is Test {
     uint256 interval;
     address vrfCoordinator;
     bytes32 gasLane;
-    uint64 subscriptionId;
     uint32 callbackGasLimit;
+    uint256 subscriptionId;
     address link;
 
     address public PLAYER = makeAddr("Player");
@@ -28,15 +29,14 @@ contract RaffleTest is Test {
 
     function setUp() external {
         DeployRaffle deployer = new DeployRaffle();
-        (raffle, helperConfig) = deployer.run();
-        (   entranceFee, 
-            interval, 
-            vrfCoordinator, 
-            gasLane, 
-            subscriptionId, 
-            callbackGasLimit,
-            link,
-        ) = helperConfig.activeNetworkConfig();
+        (raffle, helperConfig) = deployer.deployContract();
+        HelperConfig.NetworkConfig memory config = helperConfig.getConfig();
+        entranceFee = config.entranceFee;
+        interval = config.interval;
+        vrfCoordinator = config.vrfCoordinator;
+        gasLane = config.gasLane;
+        callbackGasLimit = config.callbackGasLimit;
+        subscriptionId = config.subscriptionId;
         vm.deal(PLAYER, STARTING_USER_BAL);
     }
 
@@ -84,7 +84,7 @@ contract RaffleTest is Test {
         vm.warp(block.timestamp + interval + 1);
         vm.roll(block.number + 1);
         // Act
-        (bool upkeepNeeded, ) = raffle.checkUpkeep("");
+        (bool upkeepNeeded,) = raffle.checkUpkeep("");
         // Assert
         assert(!upkeepNeeded); //returns true
     }
@@ -97,7 +97,7 @@ contract RaffleTest is Test {
         vm.roll(block.number + 1);
         raffle.performUpkeep("");
         // Act
-        (bool upkeepNeeded, ) = raffle.checkUpkeep("");
+        (bool upkeepNeeded,) = raffle.checkUpkeep("");
         // Assert
         assert(upkeepNeeded == false);
     }
@@ -107,7 +107,7 @@ contract RaffleTest is Test {
         vm.prank(PLAYER);
         raffle.enterRaffle{value: entranceFee}();
         // Act
-        (bool upkeepNeeded, ) = raffle.checkUpkeep("");
+        (bool upkeepNeeded,) = raffle.checkUpkeep("");
         // Assert
         assert(upkeepNeeded == false);
     }
@@ -119,7 +119,7 @@ contract RaffleTest is Test {
         vm.warp(block.timestamp + interval + 1);
         vm.roll(block.number + 1);
         // Act
-        (bool upkeepNeeded, ) = raffle.checkUpkeep("");
+        (bool upkeepNeeded,) = raffle.checkUpkeep("");
         // Assert
         assert(upkeepNeeded == true);
     }
@@ -142,7 +142,9 @@ contract RaffleTest is Test {
         uint256 numPlayers = 0;
         Raffle.RaffleState raffleState = raffle.getRaffleState();
         // Act / Assert
-        vm.expectRevert(abi.encodeWithSelector(Raffle.Raffle__UpkeepNotNeeded.selector, currentBal, numPlayers, raffleState));
+        vm.expectRevert(
+            abi.encodeWithSelector(Raffle.Raffle__UpkeepNotNeeded.selector, currentBal, numPlayers, raffleState)
+        );
         raffle.performUpkeep("");
     }
 
@@ -154,7 +156,7 @@ contract RaffleTest is Test {
         _;
     }
 
-    function testPerformUpkeepUpdatesRaffleStateAndEmitsRequestId() public raffleEnteredAndTimePassed{
+    function testPerformUpkeepUpdatesRaffleStateAndEmitsRequestId() public raffleEnteredAndTimePassed {
         // Act
         vm.recordLogs();
         raffle.performUpkeep("");
@@ -167,18 +169,28 @@ contract RaffleTest is Test {
     }
 
     /* fulfillRandomWords */
-    function testFulfillRandomWordsCanOnlyBeCalledAfterPerformUpkeep(
-        uint256 randomRequestId
-    ) public raffleEnteredAndTimePassed {
-        // Arrange
-        vm.expectRevert("nonexistent request");
-        VRFCoordinatorV2Mock(vrfCoordinator).fulfillRandomWords(randomRequestId, address(raffle));
+    modifier skipFork() {
+        if (block.chainid != LOCAL_CHAIN_ID) {
+            return;
+        }
+        _;
     }
 
-    function testFulfillRandomWordsPicksAWinnerResetsAndSendsMoney() public raffleEnteredAndTimePassed {
+    function testFulfillRandomWordsCanOnlyBeCalledAfterPerformUpkeep(uint256 randomRequestId)
+        public
+        raffleEnteredAndTimePassed
+        skipFork
+    {
         // Arrange
-        uint256 additionalEntrances = 5;
+        vm.expectRevert(VRFCoordinatorV2_5Mock.InvalidRequest.selector);
+        VRFCoordinatorV2_5Mock(vrfCoordinator).fulfillRandomWords(randomRequestId, address(raffle));
+    }
+
+    function testFulfillRandomWordsPicksAWinnerResetsAndSendsMoney() public raffleEnteredAndTimePassed skipFork {
+        // Arrange
+        uint256 additionalEntrances = 3; //4 total
         uint256 startingIdx = 1; // We have starting index be 1 so we can start with address(1) and not address(0)
+        address expectedWinner = address(1);
 
         for (uint256 i = startingIdx; i < startingIdx + additionalEntrances; i++) {
             address player = address(uint160(i));
@@ -186,23 +198,27 @@ contract RaffleTest is Test {
             raffle.enterRaffle{value: entranceFee}();
         }
 
-        uint256 prize = entranceFee * (additionalEntrances + 1);
-
+        uint256 previousTimeStamp = raffle.getLastTimeStamp();
+        uint256 winnerStartingBalance = expectedWinner.balance;
+        // Act
         vm.recordLogs();
         raffle.performUpkeep("");
         Vm.Log[] memory entries = vm.getRecordedLogs();
         bytes32 requestId = entries[1].topics[1];
 
-        uint256 previousTimeStamp = raffle.getLastTimeStamp();
-
         //pretend to be chainlinkVRF to get random no. & pick winner
-        VRFCoordinatorV2Mock(vrfCoordinator).fulfillRandomWords(uint256(requestId), address(raffle));
+        VRFCoordinatorV2_5Mock(vrfCoordinator).fulfillRandomWords(uint256(requestId), address(raffle));
 
         // Assert
-        assert(uint256(raffle.getRaffleState()) == 0);
-        assert(raffle.getRecentWinner() != address(0));
-        assert(raffle.getLengthOfPlayers() == 0);
-        assert(previousTimeStamp < raffle.getLastTimeStamp());
-        assert(raffle.getRecentWinner().balance == STARTING_USER_BAL + prize - entranceFee);
+        address recentWinner = raffle.getRecentWinner();
+        Raffle.RaffleState raffleState = raffle.getRaffleState();
+        uint256 winnerBalance = recentWinner.balance;
+        uint256 endingTimeStamp = raffle.getLastTimeStamp();
+        uint256 prize = entranceFee * (additionalEntrances + 1);
+
+        assert(recentWinner == expectedWinner);
+        assert(uint256(raffleState) == 0);
+        assert(winnerBalance == winnerStartingBalance + prize);
+        assert(endingTimeStamp > previousTimeStamp);
     }
 }

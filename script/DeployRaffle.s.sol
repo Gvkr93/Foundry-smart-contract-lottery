@@ -8,37 +8,42 @@ import {HelperConfig} from "./HelperConfig.s.sol";
 import {CreateSubscription, FundSubscription, AddConsumer} from "./Interactions.s.sol";
 
 contract DeployRaffle is Script {
-    function run() external returns (Raffle, HelperConfig) {
+    function run() public {
+        deployContract();
+    }
+
+    function deployContract() public returns (Raffle, HelperConfig) {
         HelperConfig helperConfig = new HelperConfig();
-        (   uint256 entranceFee, 
-            uint256 interval, 
-            address vrfCoordinator, 
-            bytes32 gasLane, 
-            uint64 subscriptionId, 
-            uint32 callbackGasLimit,
-            address link,
-            uint256 deployerKey
-        ) = helperConfig.activeNetworkConfig();
+        // local -> deploy mocks, get local config
+        // sepolia -> get sepolia config
+        HelperConfig.NetworkConfig memory config = helperConfig.getConfig();
 
-        //the upper is equivalent to 
-        //NetworkConfig config = helperConfig.activeNetworkConfig();
-
-        if (subscriptionId == 0) {
+        if (config.subscriptionId == 0) {
             //create a subscription !
             CreateSubscription createSubscription = new CreateSubscription();
-            subscriptionId = createSubscription.createSubscription(vrfCoordinator);
+            (config.subscriptionId, config.vrfCoordinator) =
+                createSubscription.createSubscription(config.vrfCoordinator, config.account);
 
             //Fund it
             FundSubscription fundSubscription = new FundSubscription();
-            fundSubscription.fundSubscription(vrfCoordinator, subscriptionId, link);
+            fundSubscription.fundSubscription(config.vrfCoordinator, config.subscriptionId, config.link, config.account);
+
+            helperConfig.setConfig(block.chainid, config); //IMP to know
         }
 
-        vm.startBroadcast();
-        Raffle raffle = new Raffle(entranceFee, interval, vrfCoordinator, gasLane, subscriptionId, callbackGasLimit);
+        vm.startBroadcast(config.account);
+        Raffle raffle = new Raffle(
+            config.entranceFee,
+            config.interval,
+            config.vrfCoordinator,
+            config.gasLane,
+            config.subscriptionId,
+            config.callbackGasLimit
+        );
         vm.stopBroadcast();
 
         AddConsumer addConsumer = new AddConsumer();
-        addConsumer.addConsumer(address(raffle), vrfCoordinator, subscriptionId, deployerKey);
+        addConsumer.addConsumer(address(raffle), config.vrfCoordinator, config.subscriptionId, config.account);
         return (raffle, helperConfig);
     }
 }
