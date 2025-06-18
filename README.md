@@ -4,7 +4,7 @@
 
 A decentralized and verifiably fair lottery system built with Solidity, tested using Foundry, and powered by Chainlink VRF v2.5 and Chainlink Automation. This project simulates a real-world lottery where users can enter with ETH, and a random winner is picked after fixed intervals using Chainlink's provably random number generator.
 
-## What we want it to do ?
+## What does this contract do ?
 
 1. Users can enter the lottery by paying for a ticket
     1. The ticket fees are going to go to the winner during the draw
